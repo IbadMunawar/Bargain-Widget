@@ -72,6 +72,10 @@ const BACKEND_BASE_URL =
   (import.meta.env.VITE_INA_BACKEND_URL as string | undefined) ||
   'https://ina-backend-fyp.onrender.com'
 
+// Versioned orchestrator chat endpoint as per the active Swagger spec.
+// This is the single source of truth — never derive this URL dynamically.
+const ORCHESTRATOR_CHAT_URL = 'https://orchestrator-dmf8.onrender.com/ina/v1/chat'
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
@@ -166,7 +170,12 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
         throw new Error(`Session init failed: ${res.status} ${res.statusText}`)
       }
 
-      const data: Session = await res.json()
+      const raw = await res.json()
+      // Safely normalise both snake_case (Saim's backend) and camelCase shapes.
+      const data: Session = {
+        ...raw,
+        session_id: raw.session_id || raw.sessionId,
+      }
       setSession(data)
 
       // Inject a contextual welcome line once we know the list price.
@@ -203,18 +212,17 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
         throw new Error('No active session. Please wait and try again.')
       }
 
-      // Route through the orchestrator base URL returned by the handshake.
-      const endpoint = `${session.orchestrator_url}/chat`
-
-      const res = await fetch(endpoint, {
+      // Send to the Swagger-documented versioned endpoint.
+      // Payload keys must match the v1 schema exactly: user_id + message.
+      const res = await fetch(ORCHESTRATOR_CHAT_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-INA-Session': session.session_id,
         },
         body: JSON.stringify({
-          session_id: session.session_id,
-          message:    text,
+          user_id: session.session_id,
+          message: text,
         }),
       })
 

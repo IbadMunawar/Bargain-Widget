@@ -8,10 +8,10 @@
  * This script is the public-facing SDK entry point embedded on merchant
  * storefronts (Shopify, WooCommerce, custom HTML). Its only jobs are:
  *
- *   1. Parse public configuration from the host <script> tag's data attributes.
- *   2. Establish the global `window.INA` command-queue interface so merchant
- *      code can call `window.INA(...)` before the core bundle has arrived.
- *   3. Asynchronously stream the core widget bundle from the CDN.
+ * 1. Parse public configuration from the host <script> tag's data attributes.
+ * 2. Establish the global `window.INA` command-queue interface so merchant
+ * code can call `window.INA(...)` before the core bundle has arrived.
+ * 3. Asynchronously stream the core widget bundle from the CDN.
  *
  * SECURITY NOTE
  * -------------
@@ -21,21 +21,21 @@
  *
  * USAGE — drop one <script> tag on the merchant's storefront:
  * -----------------------------------------------------------
- *   <script
- *     src="https://YOUR-CDN-URL/widget/v1/loader.js"
- *     data-ina-tenant="pk_live_YOUR_PUBLIC_KEY"
- *     data-ina-product="OPTIONAL_PRODUCT_ID"
- *     async
- *   ></script>
+ * <script
+ * src="https://YOUR-CDN-URL/widget/v1/loader.js"
+ * data-ina-tenant="pk_live_YOUR_PUBLIC_KEY"
+ * data-ina-product="OPTIONAL_PRODUCT_ID"
+ * async
+ * ></script>
  *
  * DYNAMIC USAGE — after the tag is already on the page:
  * -----------------------------------------------------
  * The core bundle processes everything pushed into the queue.
  * Merchants / your own frontend code can call:
  *
- *   window.INA('init', { productId: 'prod_abc123' });
- *   window.INA('show');
- *   window.INA('hide');
+ * window.INA('init', { productId: 'prod_abc123' });
+ * window.INA('show');
+ * window.INA('hide');
  *
  * All calls made before the core bundle loads are buffered in
  * `window.INA.q` and replayed automatically once the bundle is ready.
@@ -54,7 +54,7 @@
 
   // ─── 2. PARSE PUBLIC DATA ATTRIBUTES ────────────────────────────────────────
 
-  var tenantId  = scriptEl && scriptEl.getAttribute('data-ina-tenant');
+  var tenantId = scriptEl && scriptEl.getAttribute('data-ina-tenant');
   var productId = scriptEl && scriptEl.getAttribute('data-ina-product');
 
   // Guard: the public tenant key is mandatory — without it the core bundle
@@ -85,7 +85,7 @@
   // Attach the parsed public configuration directly onto the global stub so
   // the core bundle can read them synchronously on arrival, with no extra
   // round-trip or re-parsing of the DOM.
-  window.INA.tenantId        = tenantId;
+  window.INA.tenantId = tenantId;
   window.INA.defaultProductId = productId || null;
 
   // ─── 4. LAZY CORE BUNDLE INJECTION ──────────────────────────────────────────
@@ -94,9 +94,16 @@
   // ensures the download never blocks the host page's render pipeline.
   // The bundle itself is responsible for draining `window.INA.q` on load.
   //
-  var coreScript  = document.createElement('script');
+  var coreScript = document.createElement('script');
   coreScript.async = true;
-  coreScript.src   = 'https://YOUR-CDN-URL/widget/v1/widget.js';
+
+  // DYNAMIC RESOLUTION: Automatically extract the base URL directory of this loader.js
+  // script so widget.js is always fetched from the exact same domain and port.
+  var currentScriptSrc = scriptEl ? scriptEl.src : '';
+  var cdnBase = currentScriptSrc.substring(0, currentScriptSrc.lastIndexOf('/'));
+
+  // Fallback to local port 4000 if script tracking metadata is ever nullified
+  coreScript.src = (cdnBase || 'http://localhost:4000') + '/widget.js';
 
   // Append to <head>; fall back to <body> if <head> is somehow unavailable
   // (extremely rare, but defensive coding for hostile host environments).
