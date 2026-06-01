@@ -47,9 +47,11 @@ interface Session {
 interface AiFrame {
   response: string
   offer_count: number
-  negotiation_status: 'open' | 'take_it_or_leave_it' | 'locked' | 'deal_locked'
+  negotiation_status: string
   is_locked: boolean
   agreed_price?: number
+  final_price?: number
+  deal_accepted?: boolean
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -80,11 +82,12 @@ const ORCHESTRATOR_CHAT_URL = 'https://orchestrator-dmf8.onrender.com/ina/v1/cha
 
 export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
   // ── UI state
-  const [isOpen, setIsOpen]         = useState(false)
+  const [isOpen, setIsOpen] = useState(false)
   const [inputValue, setInputValue] = useState('')
+  const [isVisible, setIsVisible] = useState(true)
 
   // ── Session state (populated by handshake)
-  const [session, setSession]           = useState<Session | null>(null)
+  const [session, setSession] = useState<Session | null>(null)
   const [sessionError, setSessionError] = useState<string | null>(null)
   const [isInitializing, setIsInitializing] = useState(false)
 
@@ -92,16 +95,16 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
   const [messages, setMessages] = useState<Message[]>([
     { id: 0, role: 'assistant', text: INITIAL_ASSISTANT_TEXT },
   ])
-  const [isSending, setIsSending]       = useState(false)
-  const [offerCount, setOfferCount]     = useState(0)
+  const [isSending, setIsSending] = useState(false)
+  const [offerCount, setOfferCount] = useState(0)
   const [negotiationStatus, setNegotiationStatus] =
     useState<AiFrame['negotiation_status']>('open')
-  const [isLocked, setIsLocked]         = useState(false)
-  const [finalPrice, setFinalPrice]     = useState<number | null>(null)
+  const [isLocked, setIsLocked] = useState(false)
+  const [finalPrice, setFinalPrice] = useState<number | null>(null)
   const [dealDispatched, setDealDispatched] = useState(false)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const inputRef       = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   // ─── Derived booleans ──────────────────────────────────────────────────────
 
@@ -109,7 +112,7 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
   const isFrozen =
     offerCount >= MAX_OFFERS || isLocked || TERMINAL_STATUSES.includes(negotiationStatus)
 
-  const isDealAgreed = negotiationStatus === 'deal_locked' && finalPrice !== null
+  const isDealAgreed = (negotiationStatus === 'deal_locked' || negotiationStatus === 'deal_accepted') && finalPrice !== null
 
   // ─── Effects ───────────────────────────────────────────────────────────────
 
@@ -132,14 +135,18 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
     const root = document.getElementById('bargain-baas-widget-root')
     if (!root) return
 
-    const onShow = () => setIsOpen(true)
-    const onHide = () => setIsOpen(false)
+    const onShow         = () => setIsOpen(true)
+    const onHide         = () => { setIsOpen(false); setIsVisible(false) }
+    const onShowLauncher = () => setIsVisible(true)
 
-    root.addEventListener('ina:show', onShow)
-    root.addEventListener('ina:hide', onHide)
+    root.addEventListener('ina:show',          onShow)
+    root.addEventListener('ina:hide',          onHide)
+    root.addEventListener('ina:show-launcher', onShowLauncher)
+
     return () => {
-      root.removeEventListener('ina:show', onShow)
-      root.removeEventListener('ina:hide', onHide)
+      root.removeEventListener('ina:show',          onShow)
+      root.removeEventListener('ina:hide',          onHide)
+      root.removeEventListener('ina:show-launcher', onShowLauncher)
     }
   }, [])
 
@@ -234,18 +241,18 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
 
       // Parse all status boundaries from the frame.
       const newOfferCount = frame.offer_count ?? offerCount
-      const newStatus     = frame.negotiation_status ?? negotiationStatus
-      const newLocked     = frame.is_locked ?? isLocked
+      const newStatus = frame.negotiation_status ?? negotiationStatus
+      const newLocked = frame.is_locked ?? isLocked
 
       setOfferCount(newOfferCount)
       setNegotiationStatus(newStatus)
       setIsLocked(newLocked)
 
-      if (frame.agreed_price !== undefined && frame.agreed_price !== null) {
-        setFinalPrice(frame.agreed_price)
+      const resolvedPrice = frame.agreed_price ?? frame.final_price ?? null
+      if (resolvedPrice !== null) {
+        setFinalPrice(resolvedPrice)
       }
-
-      appendAssistantMessage(frame.response, frame.agreed_price)
+      appendAssistantMessage(frame.response, resolvedPrice ?? undefined)
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error'
       appendAssistantMessage(`⚠️ ${msg}`)
@@ -271,12 +278,12 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
     if (!session || finalPrice === null) return
 
     const payload = {
-      source:    'ina-widget',
-      type:      'INA_PRICE_AGREED',
+      source: 'ina-widget',
+      type: 'INA_PRICE_AGREED',
       sessionId: session.session_id,
       productId,
-      price:     finalPrice,
-      currency:  session.currency,
+      price: finalPrice,
+      currency: session.currency,
     }
 
     // Broadcast to the host page (same origin, or '*' if cross-origin iframe).
@@ -285,6 +292,21 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
     setDealDispatched(true)
     // Brief delay so the user sees the success state before the widget closes.
     setTimeout(() => setIsOpen(false), 1200)
+  }
+
+  function handleAbandonment(): void {
+    setSession(null)
+    setSessionError(null)
+    setIsInitializing(false)
+    setMessages([{ id: Date.now(), role: 'assistant', text: INITIAL_ASSISTANT_TEXT }])
+    setIsSending(false)
+    setOfferCount(0)
+    setNegotiationStatus('open')
+    setIsLocked(false)
+    setFinalPrice(null)
+    setDealDispatched(false)
+
+    setTimeout(() => initSession(), 0)
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -303,6 +325,8 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
   }
 
   // ─── Render ────────────────────────────────────────────────────────────────
+
+  if (!isVisible) return null
 
   return (
     // pointer-events: auto re-enables interaction inside our invisible container div.
@@ -351,11 +375,10 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
             {/* Offer counter pill */}
             {offerCount > 0 && (
               <span
-                className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                  offerCount >= MAX_OFFERS
-                    ? 'bg-red-500/30 text-red-200'
-                    : 'bg-white/10 text-violet-200'
-                }`}
+                className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${offerCount >= MAX_OFFERS
+                  ? 'bg-red-500/30 text-red-200'
+                  : 'bg-white/10 text-violet-200'
+                  }`}
               >
                 {offerCount}/{MAX_OFFERS} offers
               </span>
@@ -365,6 +388,19 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
               <span className={`w-1.5 h-1.5 rounded-full ${isInitializing ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400 animate-pulse'}`} />
               {isInitializing ? 'Connecting…' : 'Live'}
             </span>
+            {(offerCount > 0 || session) && !dealDispatched && (
+              <button
+                id="bargain-widget-reset"
+                onClick={handleAbandonment}
+                title="Abandon negotiation and start fresh"
+                className="w-7 h-7 rounded-full bg-white/10 hover:bg-rose-500/40 transition-colors flex items-center justify-center"
+                aria-label="Reset negotiation"
+              >
+                <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+                </svg>
+              </button>
+            )}
             {/* Close */}
             <button
               id="bargain-widget-close"

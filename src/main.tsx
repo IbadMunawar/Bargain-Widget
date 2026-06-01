@@ -56,8 +56,8 @@ if (!container) {
   Object.assign(container.style, {
     position: 'fixed',
     bottom: '0',
-    right:  '0',
-    width:  '0',
+    right: '0',
+    width: '0',
     height: '0',
     overflow: 'visible',
     zIndex: '2147483647',          // Maximum z-index — always on top
@@ -70,53 +70,72 @@ if (!container) {
   document.body.appendChild(container)
 }
 
-// ─── 3. Mount the Preact widget tree ─────────────────────────────────────────
+// ─── module-level mutable ref — tracks what product is currently mounted ────
+let currentProductId: string = defaultProductId
 
-if (tenantId) {
+// ─── helper: mount (or remount) the widget with a given productId ────────────
+function mountWidget(productId: string): void {
+  if (!container || !tenantId) return
+  currentProductId = productId
   render(
+    // KEY IS CRITICAL: changing the key forces Preact to fully unmount the old
+    // ChatWidget instance (destroying ALL its state) and mount a fresh one.
+    // Without this, Preact diffs the component and state leaks across products.
     <ChatWidget
+      key={productId}
       tenantId={tenantId}
-      productId={defaultProductId}
+      productId={productId}
     />,
     container,
   )
 }
 
-// ─── 4. Drain the pre-load command queue ─────────────────────────────────────
-//
-// Merchant code may have called window.INA('init', { productId: 'X' }) before
-// this bundle arrived. Now that the widget is mounted and operational, replace
-// the stub with a live dispatcher and replay every buffered call.
+// Initial mount
+if (tenantId) {
+  mountWidget(defaultProductId)
+}
 
+// ─── Live dispatcher ─────────────────────────────────────────────────────────
 function liveDispatcher(...args: unknown[]): void {
   const command = args[0] as string
   const payload = args[1] as Record<string, unknown> | undefined
 
   switch (command) {
-    case 'init':
-      // The widget already bootstrapped from window.INA context; a late 'init'
-      // call with an overriding productId is the only meaningful action here.
-      if (payload?.productId) {
-        console.info('[BargainBaaS] Late init received — productId:', payload.productId)
-        // Re-render with the overriding productId.
-        if (container && tenantId) {
-          render(
-            <ChatWidget
-              tenantId={tenantId}
-              productId={String(payload.productId)}
-            />,
-            container,
-          )
-        }
+
+    // ── Product navigation: full state wipe + remount ──────────────────────
+    case 'product-change': {
+      const newId = payload?.productId ? String(payload.productId) : ''
+      if (newId && newId !== currentProductId) {
+        mountWidget(newId)
       }
+      // Also make the widget visible (it may have been hidden on a non-product page)
+      container?.dispatchEvent(new CustomEvent('ina:show-launcher'))
+      break
+    }
+
+    // ── Returning to same product: just unhide the launcher ───────────────
+    case 'show-launcher':
+      container?.dispatchEvent(new CustomEvent('ina:show-launcher'))
       break
 
+    // ── Hide everything (non-product route) ───────────────────────────────
+    case 'hide':
+      container?.dispatchEvent(new CustomEvent('ina:hide'))
+      break
+
+    // ── Programmatically open the chat panel ──────────────────────────────
     case 'show':
       container?.dispatchEvent(new CustomEvent('ina:show'))
       break
 
-    case 'hide':
-      container?.dispatchEvent(new CustomEvent('ina:hide'))
+    // ── Late init: merchant called window.INA('init', {productId}) ────────
+    case 'init':
+      if (payload?.productId) {
+        const id = String(payload.productId)
+        if (id !== currentProductId) {
+          mountWidget(id)
+        }
+      }
       break
 
     default:
@@ -130,5 +149,5 @@ queue.forEach((bufferedArgs) => liveDispatcher(...Array.from(bufferedArgs)))
 
 // Replace the stub — all future window.INA(...) calls go directly to the live dispatcher.
 window.INA = liveDispatcher as typeof window.INA
-window.INA.tenantId        = tenantId
+window.INA.tenantId = tenantId
 window.INA.defaultProductId = defaultProductId
