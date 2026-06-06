@@ -123,16 +123,29 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
     }
   }, [messages, isOpen])
 
-  // Monitor the bot's loading cycles and widget visibility changes to trigger automatic focus jumps
+  // Check if the chat component screen is fully open and active
   useEffect(() => {
-    // Whenever the bot stops loading/thinking, immediately grab focus back to the input box
+    if (isOpen && inputRef.current) {
+      // A 150ms delay guarantees the browser engine has completely painted the layout interface before grabbing the cursor
+      const timer = setTimeout(() => {
+        inputRef.current?.focus();
+      }, 150);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [isOpen]);
+
+  // Whenever the bot stops loading/thinking, immediately grab focus back to the input box
+  useEffect(() => {
     if (!isLoading && isOpen && inputRef.current) {
       // Small timeout guarantees the DOM rendering thread has updated before focusing
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         inputRef.current?.focus();
       }, 50);
+
+      return () => clearTimeout(timer);
     }
-  }, [isLoading, isOpen])
+  }, [isLoading]);
 
   // Listen for programmatic show/hide commands emitted by main.tsx queue drain.
   useEffect(() => {
