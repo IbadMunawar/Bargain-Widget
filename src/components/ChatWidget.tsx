@@ -95,7 +95,7 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
   const [messages, setMessages] = useState<Message[]>([
     { id: 0, role: 'assistant', text: INITIAL_ASSISTANT_TEXT },
   ])
-  const [isSending, setIsSending] = useState(false)
+  const [isLoading, setIsLoading] = useState(false)
   const [offerCount, setOfferCount] = useState(0)
   const [negotiationStatus, setNegotiationStatus] =
     useState<AiFrame['negotiation_status']>('open')
@@ -123,12 +123,16 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
     }
   }, [messages, isOpen])
 
-  // Focus the input when the panel opens.
+  // Monitor the bot's loading cycles and widget visibility changes to trigger automatic focus jumps
   useEffect(() => {
-    if (isOpen) {
-      setTimeout(() => inputRef.current?.focus(), 150)
+    // Whenever the bot stops loading/thinking, immediately grab focus back to the input box
+    if (!isLoading && isOpen && inputRef.current) {
+      // Small timeout guarantees the DOM rendering thread has updated before focusing
+      setTimeout(() => {
+        inputRef.current?.focus();
+      }, 50);
     }
-  }, [isOpen])
+  }, [isLoading, isOpen])
 
   // Listen for programmatic show/hide commands emitted by main.tsx queue drain.
   useEffect(() => {
@@ -205,13 +209,13 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
 
   async function handleSend(): Promise<void> {
     const text = inputValue.trim()
-    if (!text || isFrozen || isSending) return
+    if (!text || isFrozen || isLoading) return
 
     // Append user message immediately for snappy UX.
     const userMsg: Message = { id: Date.now(), role: 'user', text }
     setMessages((prev) => [...prev, userMsg])
     setInputValue('')
-    setIsSending(true)
+    setIsLoading(true)
 
     try {
       if (!session) {
@@ -257,7 +261,7 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
       const msg = err instanceof Error ? err.message : 'Unknown error'
       appendAssistantMessage(`⚠️ ${msg}`)
     } finally {
-      setIsSending(false)
+      setIsLoading(false)
     }
   }
 
@@ -299,7 +303,7 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
     setSessionError(null)
     setIsInitializing(false)
     setMessages([{ id: Date.now(), role: 'assistant', text: INITIAL_ASSISTANT_TEXT }])
-    setIsSending(false)
+    setIsLoading(false)
     setOfferCount(0)
     setNegotiationStatus('open')
     setIsLocked(false)
@@ -472,7 +476,7 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
           ))}
 
           {/* Typing indicator while AI is responding */}
-          {isSending && (
+          {isLoading && (
             <div className="flex justify-start">
               <div className="w-7 h-7 rounded-full bg-violet-100 dark:bg-violet-900/40 flex items-center justify-center shrink-0 mr-2 mt-0.5">
                 <svg className="w-4 h-4 text-violet-600 dark:text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -525,13 +529,13 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
                 onInput={(e) => setInputValue((e.target as HTMLInputElement).value)}
                 onKeyDown={handleKeyDown}
                 placeholder={isInitializing ? 'Connecting to session…' : 'Make your offer or ask a question…'}
-                disabled={isInitializing || isSending}
+                disabled={isInitializing || isLoading}
                 className="flex-1 bg-transparent text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 outline-none disabled:cursor-wait"
               />
               <button
                 id="bargain-widget-send"
                 onClick={handleSend}
-                disabled={!inputValue.trim() || isInitializing || isSending}
+                disabled={!inputValue.trim() || isInitializing || isLoading}
                 className="w-8 h-8 rounded-lg bg-violet-600 hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center justify-center shrink-0 active:scale-95"
                 aria-label="Send message"
               >
