@@ -62,6 +62,7 @@ const TERMINAL_STATUSES: AiFrame['negotiation_status'][] = [
   'take_it_or_leave_it',
   'locked',
   'deal_locked',
+  'deal_accepted',
 ]
 
 const INITIAL_ASSISTANT_TEXT =
@@ -101,6 +102,7 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
     useState<AiFrame['negotiation_status']>('open')
   const [isLocked, setIsLocked] = useState(false)
   const [finalPrice, setFinalPrice] = useState<number | null>(null)
+  const [dealAccepted, setDealAccepted] = useState(false)
   const [dealDispatched, setDealDispatched] = useState(false)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -113,6 +115,10 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
     offerCount >= MAX_OFFERS || isLocked || TERMINAL_STATUSES.includes(negotiationStatus)
 
   const isDealAgreed = (negotiationStatus === 'deal_locked' || negotiationStatus === 'deal_accepted') && finalPrice !== null
+
+  /** True the instant a deal is struck — drives the instant input freeze. */
+  const isDealStruck =
+    negotiationStatus === 'deal_accepted' || dealAccepted === true
 
   // ─── Effects ───────────────────────────────────────────────────────────────
 
@@ -264,6 +270,11 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
       setOfferCount(newOfferCount)
       setNegotiationStatus(newStatus)
       setIsLocked(newLocked)
+
+      // Capture the deal_accepted flag from the network payload.
+      if (frame.deal_accepted === true) {
+        setDealAccepted(true)
+      }
 
       const resolvedPrice = frame.agreed_price ?? frame.final_price ?? null
       if (resolvedPrice !== null) {
@@ -495,16 +506,37 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
         )}
 
         {/* ── Input Area ────────────────────────────────────────────────── */}
-        <div className="px-3 py-3 bg-white dark:bg-[#1a1b26] border-t border-gray-100 dark:border-[#2e303a] shrink-0">
-          {isFrozen ? (
-            /* Show a disabled state instead of a fully interactive input. */
-            <div className="flex items-center gap-2 bg-gray-100 dark:bg-[#22232f] rounded-xl px-3 py-2 opacity-50">
+        <div className={`px-3 py-3 bg-white dark:bg-[#1a1b26] border-t border-gray-100 dark:border-[#2e303a] shrink-0 transition-opacity duration-300 ${isDealStruck ? 'opacity-50 pointer-events-none' : ''}`}>
+          {isFrozen || isDealStruck ? (
+            /* Show a disabled / locked state when frozen or deal is struck. */
+            <div className={`flex items-center gap-2 rounded-xl px-3 py-2 ${
+              isDealStruck
+                ? 'bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-700/40'
+                : 'bg-gray-100 dark:bg-[#22232f] opacity-50'
+            }`}>
               <input
                 disabled
                 type="text"
-                placeholder={isDealAgreed ? 'Deal agreed! Use the button above.' : 'Negotiation is closed.'}
-                className="flex-1 bg-transparent text-sm text-gray-500 dark:text-gray-500 placeholder-gray-400 outline-none cursor-not-allowed"
+                placeholder={
+                  isDealStruck
+                    ? '🤝 Deal locked! Added to cart.'
+                    : isDealAgreed
+                      ? 'Deal agreed! Use the button above.'
+                      : 'Negotiation is closed.'
+                }
+                className={`flex-1 bg-transparent text-sm placeholder-current outline-none cursor-not-allowed ${
+                  isDealStruck
+                    ? 'text-emerald-600 dark:text-emerald-400 placeholder-emerald-500 dark:placeholder-emerald-500 font-medium'
+                    : 'text-gray-500 dark:text-gray-500 placeholder-gray-400'
+                }`}
               />
+              {isDealStruck && (
+                <span className="shrink-0 w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center">
+                  <svg className="w-4 h-4 text-emerald-600 dark:text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+                  </svg>
+                </span>
+              )}
             </div>
           ) : (
             <div className="flex items-center gap-2 bg-gray-50 dark:bg-[#22232f] rounded-xl px-3 py-2 border border-gray-200 dark:border-[#2e303a] focus-within:border-violet-400 focus-within:ring-2 focus-within:ring-violet-400/20 transition-all">
@@ -515,14 +547,14 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
                 value={inputValue}
                 onInput={(e) => setInputValue((e.target as HTMLInputElement).value)}
                 onKeyDown={handleKeyDown}
-                placeholder={isInitializing ? 'Connecting to session…' : 'Enter your offer price…'}
-                disabled={isInitializing || isLoading}
+                placeholder={isDealStruck ? '🤝 Deal locked! Added to cart.' : isInitializing ? 'Connecting to session…' : 'Enter your offer price…'}
+                disabled={isDealStruck || isInitializing || isLoading}
                 className="flex-1 bg-transparent text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 outline-none disabled:cursor-wait"
               />
               <button
                 id="bargain-widget-send"
                 onClick={handleSend}
-                disabled={!inputValue.trim() || isInitializing || isLoading}
+                disabled={isDealStruck || !inputValue.trim() || isInitializing || isLoading}
                 className="w-8 h-8 rounded-lg bg-violet-600 hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center justify-center shrink-0 active:scale-95"
                 aria-label="Send message"
               >
