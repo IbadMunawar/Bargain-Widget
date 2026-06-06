@@ -298,20 +298,6 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
     setTimeout(() => setIsOpen(false), 1200)
   }
 
-  function handleAbandonment(): void {
-    setSession(null)
-    setSessionError(null)
-    setIsInitializing(false)
-    setMessages([{ id: Date.now(), role: 'assistant', text: INITIAL_ASSISTANT_TEXT }])
-    setIsLoading(false)
-    setOfferCount(0)
-    setNegotiationStatus('open')
-    setIsLocked(false)
-    setFinalPrice(null)
-    setDealDispatched(false)
-
-    setTimeout(() => initSession(), 0)
-  }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -392,19 +378,7 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
               <span className={`w-1.5 h-1.5 rounded-full ${isInitializing ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400 animate-pulse'}`} />
               {isInitializing ? 'Connecting…' : 'Live'}
             </span>
-            {(offerCount > 0 || session) && !dealDispatched && (
-              <button
-                id="bargain-widget-reset"
-                onClick={handleAbandonment}
-                title="Abandon negotiation and start fresh"
-                className="w-7 h-7 rounded-full bg-white/10 hover:bg-rose-500/40 transition-colors flex items-center justify-center"
-                aria-label="Reset negotiation"
-              >
-                <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
-                </svg>
-              </button>
-            )}
+
             {/* Close */}
             <button
               id="bargain-widget-close"
@@ -528,7 +502,7 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
                 value={inputValue}
                 onInput={(e) => setInputValue((e.target as HTMLInputElement).value)}
                 onKeyDown={handleKeyDown}
-                placeholder={isInitializing ? 'Connecting to session…' : 'Make your offer or ask a question…'}
+                placeholder={isInitializing ? 'Connecting to session…' : 'Enter your offer price…'}
                 disabled={isInitializing || isLoading}
                 className="flex-1 bg-transparent text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 outline-none disabled:cursor-wait"
               />
@@ -546,9 +520,15 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
             </div>
           )}
 
-          <p className="text-center text-[10px] text-gray-400 dark:text-gray-600 mt-2">
-            Powered by <span className="font-semibold text-violet-400">BargainBaaS</span>
-          </p>
+          <a
+            href="https://bargainbaas-frontend.vercel.app"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center justify-center gap-1 mt-2 text-[10px] text-gray-400 dark:text-gray-600 hover:text-violet-400 dark:hover:text-violet-400 transition-colors duration-200 group"
+          >
+            Powered by{' '}
+            <span className="font-semibold text-violet-400 group-hover:underline underline-offset-2">BargainBaaS</span>
+          </a>
         </div>
       </div>
 
