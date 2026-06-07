@@ -105,6 +105,13 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
   const [dealAccepted, setDealAccepted] = useState(false)
   const [dealDispatched, setDealDispatched] = useState(false)
 
+  /**
+   * Scenario C gate: becomes true ONLY when the user physically clicks
+   * "Accept Deal" and the cart postMessage has been dispatched.
+   * This is the sole trigger for the green "Added to cart" badge.
+   */
+  const [isSentToCart, setIsSentToCart] = useState(false)
+
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -114,11 +121,32 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
   const isFrozen =
     offerCount >= MAX_OFFERS || isLocked || TERMINAL_STATUSES.includes(negotiationStatus)
 
-  const isDealAgreed = (negotiationStatus === 'deal_locked' || negotiationStatus === 'deal_accepted') && finalPrice !== null
+  /**
+   * Scenario A: The backend has accepted / locked with a price, but the
+   * user hasn't clicked "Accept Deal" yet.
+   */
+  const isOfferPendingAcceptance =
+    !isSentToCart &&
+    (negotiationStatus === 'deal_accepted' ||
+     dealAccepted === true ||
+     ((negotiationStatus === 'locked' || negotiationStatus === 'deal_locked') && finalPrice !== null))
 
-  /** True the instant a deal is struck — drives the instant input freeze. */
-  const isDealStruck =
-    negotiationStatus === 'deal_accepted' || dealAccepted === true
+  /**
+   * Scenario B: Terminal state with NO agreed price — total failure.
+   * Max offers exhausted or backend locked without a price.
+   */
+  const isNegotiationFailed =
+    !isSentToCart &&
+    !isOfferPendingAcceptance &&
+    (negotiationStatus === 'locked' || negotiationStatus === 'take_it_or_leave_it') &&
+    finalPrice === null &&
+    (offerCount >= MAX_OFFERS || isLocked)
+
+  /**
+   * Scenario C: The user explicitly clicked "Accept Deal" — cart is synced.
+   * Solely gated by the local isSentToCart boolean.
+   */
+  const isDealSentToCart = isSentToCart
 
   // ─── Effects ───────────────────────────────────────────────────────────────
 
@@ -318,6 +346,8 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
     window.postMessage(payload, window.location.origin)
 
     setDealDispatched(true)
+    // ── Scenario C trigger: flip the cart-sync boolean ──
+    setIsSentToCart(true)
     // Brief delay so the user sees the success state before the widget closes.
     setTimeout(() => setIsOpen(false), 1200)
   }
@@ -494,49 +524,107 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* ── Frozen State Banner ───────────────────────────────────────── */}
-        {isFrozen && !isDealAgreed && (
-          <div className="px-4 py-2.5 bg-amber-50 dark:bg-amber-900/20 border-t border-amber-200 dark:border-amber-700/40 shrink-0">
-            <p className="text-center text-xs font-semibold text-amber-700 dark:text-amber-400">
-              {offerCount >= MAX_OFFERS
-                ? `Maximum ${MAX_OFFERS} offers reached — negotiation closed.`
-                : 'Negotiation has concluded.'}
+        {/* ══════════════════════════════════════════════════════════════════
+         *  FOOTER BANNER — Tri-state conditional rendering
+         *  Scenario A → Blue/purple notice (offer pending user action)
+         *  Scenario B → Dark amber/red alert (negotiation failed)
+         *  Scenario C → Green secure badge (cart synced)
+         * ══════════════════════════════════════════════════════════════════ */}
+
+        {/* ── Scenario A: Offer accepted, awaiting user click ─────────── */}
+        {isOfferPendingAcceptance && (
+          <div className="px-4 py-2.5 bg-indigo-50 dark:bg-indigo-900/20 border-t border-indigo-200 dark:border-indigo-700/40 shrink-0">
+            <p className="text-center text-xs font-semibold text-indigo-700 dark:text-indigo-400">
+              🤝 Offer accepted! Click 'Accept Deal' to save to cart.
+            </p>
+          </div>
+        )}
+
+        {/* ── Scenario B: Negotiation failed — max offers, no agreement ── */}
+        {isNegotiationFailed && (
+          <div className="px-4 py-2.5 bg-red-50 dark:bg-red-900/20 border-t border-red-300 dark:border-red-700/40 shrink-0">
+            <p className="text-center text-xs font-semibold text-red-700 dark:text-red-400">
+              ❌ Negotiation closed. Maximum offers reached without agreement.
+            </p>
+          </div>
+        )}
+
+        {/* ── Scenario C: Deal locked & synced to cart ────────────────── */}
+        {isDealSentToCart && (
+          <div className="px-4 py-2.5 bg-emerald-50 dark:bg-emerald-900/20 border-t border-emerald-200 dark:border-emerald-700/40 shrink-0">
+            <p className="text-center text-xs font-semibold text-emerald-700 dark:text-emerald-400 flex items-center justify-center gap-1.5">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+              </svg>
+              🤝 Deal locked! Added to cart.
             </p>
           </div>
         )}
 
         {/* ── Input Area ────────────────────────────────────────────────── */}
-        <div className={`px-3 py-3 bg-white dark:bg-[#1a1b26] border-t border-gray-100 dark:border-[#2e303a] shrink-0 transition-opacity duration-300 ${isDealStruck ? 'opacity-50 pointer-events-none' : ''}`}>
-          {isFrozen || isDealStruck ? (
-            /* Show a disabled / locked state when frozen or deal is struck. */
-            <div className={`flex items-center gap-2 rounded-xl px-3 py-2 ${
-              isDealStruck
-                ? 'bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-700/40'
-                : 'bg-gray-100 dark:bg-[#22232f] opacity-50'
-            }`}>
+        <div className={`px-3 py-3 bg-white dark:bg-[#1a1b26] border-t border-gray-100 dark:border-[#2e303a] shrink-0 transition-opacity duration-300 ${isDealSentToCart ? 'opacity-50 pointer-events-none' : ''}`}>
+
+          {/* ── Scenario C: Green locked input ────────────────────────── */}
+          {isDealSentToCart ? (
+            <div className="flex items-center gap-2 rounded-xl px-3 py-2 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-700/40">
               <input
                 disabled
                 type="text"
-                placeholder={
-                  isDealStruck
-                    ? '🤝 Deal locked! Added to cart.'
-                    : isDealAgreed
-                      ? 'Deal agreed! Use the button above.'
-                      : 'Negotiation is closed.'
-                }
-                className={`flex-1 bg-transparent text-sm placeholder-current outline-none cursor-not-allowed ${
-                  isDealStruck
-                    ? 'text-emerald-600 dark:text-emerald-400 placeholder-emerald-500 dark:placeholder-emerald-500 font-medium'
-                    : 'text-gray-500 dark:text-gray-500 placeholder-gray-400'
-                }`}
+                placeholder="🤝 Deal locked! Added to cart."
+                className="flex-1 bg-transparent text-sm text-emerald-600 dark:text-emerald-400 placeholder-emerald-500 dark:placeholder-emerald-500 font-medium outline-none cursor-not-allowed"
               />
-              {isDealStruck && (
-                <span className="shrink-0 w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center">
-                  <svg className="w-4 h-4 text-emerald-600 dark:text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
-                  </svg>
-                </span>
-              )}
+              <span className="shrink-0 w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center">
+                <svg className="w-4 h-4 text-emerald-600 dark:text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+                </svg>
+              </span>
+            </div>
+
+          /* ── Scenario A: Disabled input, pending user acceptance ──── */
+          ) : isOfferPendingAcceptance ? (
+            <div className="flex items-center gap-2 rounded-xl px-3 py-2 bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-700/40">
+              <input
+                disabled
+                type="text"
+                placeholder="Review the final price option above..."
+                className="flex-1 bg-transparent text-sm text-indigo-600 dark:text-indigo-400 placeholder-indigo-400 dark:placeholder-indigo-500 font-medium outline-none cursor-not-allowed"
+              />
+              <span className="shrink-0 w-8 h-8 rounded-lg bg-indigo-500/20 flex items-center justify-center">
+                <svg className="w-4 h-4 text-indigo-600 dark:text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </span>
+            </div>
+
+          /* ── Scenario B: Fully disabled — negotiation failed ──────── */
+          ) : isNegotiationFailed ? (
+            <div className="flex items-center gap-2 rounded-xl px-3 py-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700/40 opacity-60">
+              <input
+                disabled
+                type="text"
+                placeholder="Negotiation ended."
+                className="flex-1 bg-transparent text-sm text-red-600 dark:text-red-400 placeholder-red-400 dark:placeholder-red-500 font-medium outline-none cursor-not-allowed"
+              />
+              <button
+                disabled
+                className="w-8 h-8 rounded-lg bg-red-500/20 flex items-center justify-center shrink-0 cursor-not-allowed opacity-50"
+                aria-label="Send message"
+              >
+                <svg className="w-4 h-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+                </svg>
+              </button>
+            </div>
+
+          /* ── Default: Active input (mid-negotiation, still open) ──── */
+          ) : isFrozen ? (
+            <div className="flex items-center gap-2 rounded-xl px-3 py-2 bg-gray-100 dark:bg-[#22232f] opacity-50">
+              <input
+                disabled
+                type="text"
+                placeholder="Negotiation is closed."
+                className="flex-1 bg-transparent text-sm text-gray-500 dark:text-gray-500 placeholder-gray-400 outline-none cursor-not-allowed"
+              />
             </div>
           ) : (
             <div className="flex items-center gap-2 bg-gray-50 dark:bg-[#22232f] rounded-xl px-3 py-2 border border-gray-200 dark:border-[#2e303a] focus-within:border-violet-400 focus-within:ring-2 focus-within:ring-violet-400/20 transition-all">
@@ -547,14 +635,14 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
                 value={inputValue}
                 onInput={(e) => setInputValue((e.target as HTMLInputElement).value)}
                 onKeyDown={handleKeyDown}
-                placeholder={isDealStruck ? '🤝 Deal locked! Added to cart.' : isInitializing ? 'Connecting to session…' : 'Enter your offer price…'}
-                disabled={isDealStruck || isInitializing || isLoading}
+                placeholder={isInitializing ? 'Connecting to session…' : 'Enter your offer price…'}
+                disabled={isInitializing || isLoading}
                 className="flex-1 bg-transparent text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 outline-none disabled:cursor-wait"
               />
               <button
                 id="bargain-widget-send"
                 onClick={handleSend}
-                disabled={isDealStruck || !inputValue.trim() || isInitializing || isLoading}
+                disabled={!inputValue.trim() || isInitializing || isLoading}
                 className="w-8 h-8 rounded-lg bg-violet-600 hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center justify-center shrink-0 active:scale-95"
                 aria-label="Send message"
               >
