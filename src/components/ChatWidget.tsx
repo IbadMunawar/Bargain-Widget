@@ -12,6 +12,8 @@
  */
 
 import { useState, useRef, useEffect } from 'preact/hooks'
+import { getOrCreateAnonId } from '../utils/anonId'
+import { saveMessages, loadMessages, clearMessages } from '../utils/sessionMessages'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -208,6 +210,14 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen])
 
+  // ── Auto-save conversation state on every message change ──────────────────
+  useEffect(() => {
+    if (!session?.session_id) return
+    // Only persist once we have more than the initial greeting.
+    if (messages.length <= 1) return
+    saveMessages(session.session_id, messages)
+  }, [messages, session?.session_id])
+
   // ─── Session Handshake ─────────────────────────────────────────────────────
 
   async function initSession(): Promise<void> {
@@ -215,14 +225,27 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
     setSessionError(null)
 
     try {
+      const anonId = getOrCreateAnonId(tenantId)
+
       const res = await fetch(`${BACKEND_BASE_URL}/api/saas/session/init`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           publicKey: tenantId,
           productId,
+          anonId,
         }),
       })
+
+      // ── 429 Rate-limit boundary ─────────────────────────────────────────
+      if (res.status === 429) {
+        setSessionError('rate_limited')
+        setIsInitializing(false)
+        appendAssistantMessage(
+          "⏳ You've already started a negotiation for this product today. Come back in 24 hours for a fresh session.",
+        )
+        return
+      }
 
       if (!res.ok) {
         throw new Error(`Session init failed: ${res.status} ${res.statusText}`)
@@ -230,17 +253,71 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
 
       const raw = await res.json()
       // Safely normalise both snake_case (Saim's backend) and camelCase shapes.
-      const data: Session = {
+      const data = {
         ...raw,
         session_id: raw.session_id || raw.sessionId,
       }
-      setSession(data)
+      setSession(data as Session)
 
-      // Inject a contextual welcome line once we know the list price.
-      appendAssistantMessage(
-        `This product is listed at ${formatPrice(data.list_price, data.currency)}. ` +
-        `What price works for you? (You have up to ${MAX_OFFERS} offers.)`,
-      )
+      // ── Session resumption ──────────────────────────────────────────────
+      if (data.resumed) {
+        if (data.status === 'AGREED') {
+          // Deal was previously accepted — restore the terminal state.
+          const agreedPrice = data.agreed_price ?? data.final_price ?? data.list_price
+          setFinalPrice(agreedPrice)
+          setDealAccepted(true)
+          setNegotiationStatus('deal_accepted')
+
+          // Restore full conversation from backend history.
+          if (Array.isArray(data.message_history) && data.message_history.length > 0) {
+            const restored: Message[] = data.message_history.map(
+              (m: { role: 'user' | 'assistant'; content: string }, i: number) => ({
+                id: i,
+                role: m.role,
+                text: m.content,
+                ...(i === data.message_history.length - 1 ? { dealPrice: agreedPrice } : {}),
+              }),
+            )
+            setMessages(restored)
+          }
+
+          // Re-fire the postMessage so the merchant storefront knows the
+          // checkout code token is still valid (e.g. after a page reload).
+          window.parent.postMessage(
+            {
+              source: 'ina-widget',
+              type: 'BARGAIN_BAAS_SUCCESS',
+              sessionId: data.session_id,
+              productId,
+              price: agreedPrice,
+              currency: data.currency,
+            },
+            '*',
+          )
+        } else if (data.status === 'ACTIVE') {
+          // Active negotiation — rehydrate from local storage.
+          const cached = loadMessages(data.session_id)
+          if (cached && cached.length > 0) {
+            setMessages(cached as Message[])
+          } else {
+            // No local cache — fall back to the standard greeting + pricing.
+            appendAssistantMessage(
+              `This product is listed at ${formatPrice(data.list_price, data.currency)}. ` +
+              `What price works for you? (You have up to ${MAX_OFFERS} offers.)`,
+            )
+          }
+
+          // Restore negotiation counters if the backend provided them.
+          if (typeof data.offer_count === 'number') setOfferCount(data.offer_count)
+          if (data.negotiation_status) setNegotiationStatus(data.negotiation_status)
+        }
+      } else {
+        // ── Fresh session — standard default greeting ────────────────────
+        appendAssistantMessage(
+          `This product is listed at ${formatPrice(data.list_price, data.currency)}. ` +
+          `What price works for you? (You have up to ${MAX_OFFERS} offers.)`,
+        )
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error'
       setSessionError(msg)
@@ -344,6 +421,10 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
 
     // Broadcast to the host page (same origin, or '*' if cross-origin iframe).
     window.postMessage(payload, window.location.origin)
+
+    // ── Transaction lock cleanup: wipe local messages now that the backend
+    //    database is the single source of truth for this session's history.
+    clearMessages(session.session_id)
 
     setDealDispatched(true)
     // ── Scenario C trigger: flip the cart-sync boolean ──
