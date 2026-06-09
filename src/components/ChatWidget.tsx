@@ -270,14 +270,14 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
 
           // Restore full conversation from backend history.
           if (Array.isArray(data.message_history) && data.message_history.length > 0) {
-            const restored: Message[] = data.message_history.map(
-              (m: { role: 'user' | 'assistant'; content: string }, i: number) => ({
+            const restored: Message[] = data.message_history
+              .filter((m: { text?: string }) => !!m.text)
+              .map((m: { from: string; text: string; bot_offer?: number }, i: number) => ({
                 id: i,
-                role: m.role,
-                text: m.content,
-                ...(i === data.message_history.length - 1 ? { dealPrice: agreedPrice } : {}),
-              }),
-            )
+                role: m.from === 'ina' ? 'assistant' as const : 'user' as const,
+                text: m.text,
+                ...(m.bot_offer !== undefined ? { dealPrice: m.bot_offer } : {}),
+              }))
             setMessages(restored)
           }
 
@@ -410,17 +410,18 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
   function handleVerifiedAddToCart(): void {
     if (!session || finalPrice === null) return
 
-    const payload = {
+    const msg = {
       source: 'ina-widget',
-      type: 'INA_PRICE_AGREED',
+      type: 'BARGAIN_BAAS_SUCCESS',
       sessionId: session.session_id,
       productId,
+      finalPrice,
       price: finalPrice,
       currency: session.currency,
     }
 
-    // Broadcast to the host page (same origin, or '*' if cross-origin iframe).
-    window.postMessage(payload, window.location.origin)
+    // Cross-origin safe dispatch for iframe runtimes.
+    window.parent.postMessage(msg, '*')
 
     // ── Transaction lock cleanup: wipe local messages now that the backend
     //    database is the single source of truth for this session's history.
