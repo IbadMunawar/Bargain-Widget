@@ -104,7 +104,6 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
     useState<AiFrame['negotiation_status']>('open')
   const [isLocked, setIsLocked] = useState(false)
   const [finalPrice, setFinalPrice] = useState<number | null>(null)
-  const [dealAccepted, setDealAccepted] = useState(false)
   const [dealDispatched, setDealDispatched] = useState(false)
 
   /**
@@ -129,9 +128,10 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
    */
   const isOfferPendingAcceptance =
     !isSentToCart &&
+    finalPrice !== null &&
     (negotiationStatus === 'deal_accepted' ||
-     dealAccepted === true ||
-     ((negotiationStatus === 'locked' || negotiationStatus === 'deal_locked') && finalPrice !== null))
+      negotiationStatus === 'deal_locked' ||
+      negotiationStatus === 'locked')
 
   /**
    * Scenario B: Terminal state with NO agreed price — total failure.
@@ -166,7 +166,7 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
       const timer = setTimeout(() => {
         inputRef.current?.focus();
       }, 150);
-      
+
       return () => clearTimeout(timer);
     }
   }, [isOpen]);
@@ -188,17 +188,17 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
     const root = document.getElementById('bargain-baas-widget-root')
     if (!root) return
 
-    const onShow         = () => setIsOpen(true)
-    const onHide         = () => { setIsOpen(false); setIsVisible(false) }
+    const onShow = () => setIsOpen(true)
+    const onHide = () => { setIsOpen(false); setIsVisible(false) }
     const onShowLauncher = () => setIsVisible(true)
 
-    root.addEventListener('ina:show',          onShow)
-    root.addEventListener('ina:hide',          onHide)
+    root.addEventListener('ina:show', onShow)
+    root.addEventListener('ina:hide', onHide)
     root.addEventListener('ina:show-launcher', onShowLauncher)
 
     return () => {
-      root.removeEventListener('ina:show',          onShow)
-      root.removeEventListener('ina:hide',          onHide)
+      root.removeEventListener('ina:show', onShow)
+      root.removeEventListener('ina:hide', onHide)
       root.removeEventListener('ina:show-launcher', onShowLauncher)
     }
   }, [])
@@ -263,9 +263,13 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
       if (data.resumed) {
         if (data.status === 'AGREED') {
           // Deal was previously accepted — restore the terminal state.
+          // Jump straight to Scenario C (green "Deal locked" badge) so no
+          // stale "Accept Deal" button or misleading banner ever renders.
+          // The postMessage cart event is NOT re-fired — only the explicit
+          // user click in handleVerifiedAddToCart() may dispatch it.
           const agreedPrice = data.agreed_price ?? data.final_price ?? data.list_price
           setFinalPrice(agreedPrice)
-          setDealAccepted(true)
+          setIsSentToCart(true)
           setNegotiationStatus('deal_accepted')
 
           // Restore full conversation from backend history.
@@ -280,20 +284,6 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
               }))
             setMessages(restored)
           }
-
-          // Re-fire the postMessage so the merchant storefront knows the
-          // checkout code token is still valid (e.g. after a page reload).
-          window.parent.postMessage(
-            {
-              source: 'ina-widget',
-              type: 'BARGAIN_BAAS_SUCCESS',
-              sessionId: data.session_id,
-              productId,
-              price: agreedPrice,
-              currency: data.currency,
-            },
-            '*',
-          )
         } else if (data.status === 'ACTIVE') {
           // Active negotiation — rehydrate from local storage.
           const cached = loadMessages(data.session_id)
@@ -376,10 +366,7 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
       setNegotiationStatus(newStatus)
       setIsLocked(newLocked)
 
-      // Capture the deal_accepted flag from the network payload.
-      if (frame.deal_accepted === true) {
-        setDealAccepted(true)
-      }
+
 
       const resolvedPrice = frame.agreed_price ?? frame.final_price ?? null
       if (resolvedPrice !== null) {
@@ -531,7 +518,7 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
 
         {/* ── Messages ───────────────────────────────────────────────────── */}
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3 bg-gray-50 dark:bg-[#16171d]">
-          {messages.map((msg) => (
+          {messages.map((msg, index) => (
             <div
               key={msg.id}
               className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
@@ -554,33 +541,36 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
                 {msg.text}
 
                 {/* ── Deal Action Buttons ─────────────────────────────────── */}
-                {msg.dealPrice !== undefined && (
-                  <div className="mt-3 flex flex-col gap-2">
-                    <button
-                      id={`bargain-accept-deal-${msg.id}`}
-                      disabled={dealDispatched}
-                      onClick={handleVerifiedAddToCart}
-                      className={`
+                {msg.dealPrice !== undefined &&
+                  index === messages.length - 1 &&
+                  msg.role === 'assistant' &&
+                  isOfferPendingAcceptance && (
+                    <div className="mt-3 flex flex-col gap-2">
+                      <button
+                        id={`bargain-accept-deal-${msg.id}`}
+                        disabled={dealDispatched}
+                        onClick={handleVerifiedAddToCart}
+                        className={`
                         w-full py-2 px-3 rounded-xl text-xs font-bold
                         transition-all duration-200 active:scale-95
                         ${dealDispatched
-                          ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 cursor-not-allowed'
-                          : 'bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-white shadow-md shadow-emerald-500/25 cursor-pointer'}
+                            ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 cursor-not-allowed'
+                            : 'bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-white shadow-md shadow-emerald-500/25 cursor-pointer'}
                       `}
-                    >
-                      {dealDispatched ? '✓ Deal Sent to Cart!' : `🤝 Accept Deal — ${session ? formatPrice(msg.dealPrice, session.currency) : msg.dealPrice}`}
-                    </button>
-                    {!dealDispatched && (
-                      <button
-                        id={`bargain-decline-deal-${msg.id}`}
-                        onClick={() => setIsOpen(false)}
-                        className="w-full py-1.5 px-3 rounded-xl text-xs font-semibold text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors cursor-pointer"
                       >
-                        No Thanks
+                        {dealDispatched ? '✓ Deal Sent to Cart!' : `🤝 Accept Deal — ${session ? formatPrice(msg.dealPrice, session.currency) : msg.dealPrice}`}
                       </button>
-                    )}
-                  </div>
-                )}
+                      {!dealDispatched && (
+                        <button
+                          id={`bargain-decline-deal-${msg.id}`}
+                          onClick={() => setIsOpen(false)}
+                          className="w-full py-1.5 px-3 rounded-xl text-xs font-semibold text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors cursor-pointer"
+                        >
+                          No Thanks
+                        </button>
+                      )}
+                    </div>
+                  )}
               </div>
             </div>
           ))}
@@ -662,7 +652,7 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
               </span>
             </div>
 
-          /* ── Scenario A: Disabled input, pending user acceptance ──── */
+            /* ── Scenario A: Disabled input, pending user acceptance ──── */
           ) : isOfferPendingAcceptance ? (
             <div className="flex items-center gap-2 rounded-xl px-3 py-2 bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-700/40">
               <input
@@ -678,7 +668,7 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
               </span>
             </div>
 
-          /* ── Scenario B: Fully disabled — negotiation failed ──────── */
+            /* ── Scenario B: Fully disabled — negotiation failed ──────── */
           ) : isNegotiationFailed ? (
             <div className="flex items-center gap-2 rounded-xl px-3 py-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700/40 opacity-60">
               <input
@@ -698,7 +688,7 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
               </button>
             </div>
 
-          /* ── Default: Active input (mid-negotiation, still open) ──── */
+            /* ── Default: Active input (mid-negotiation, still open) ──── */
           ) : isFrozen ? (
             <div className="flex items-center gap-2 rounded-xl px-3 py-2 bg-gray-100 dark:bg-[#22232f] opacity-50">
               <input
@@ -780,3 +770,5 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
     </div>
   )
 }
+
+
