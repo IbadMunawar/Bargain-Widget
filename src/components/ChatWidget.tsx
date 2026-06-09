@@ -60,12 +60,7 @@ interface AiFrame {
 
 const MAX_OFFERS = 5
 
-const TERMINAL_STATUSES: AiFrame['negotiation_status'][] = [
-  'take_it_or_leave_it',
-  'locked',
-  'deal_locked',
-  'deal_accepted',
-]
+
 
 const INITIAL_ASSISTANT_TEXT =
   "👋 Hi there! I'm your AI deal assistant. Ready to find you the best price on this product — make me an offer!"
@@ -118,31 +113,47 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
 
   // ─── Derived booleans ──────────────────────────────────────────────────────
 
-  /** True when no more negotiation turns are allowed. */
+  /**
+   * True when no more negotiation turns are allowed.
+   * Extended to include deal_accepted so the input freezes once a mutual
+   * agreement or bot last-offer is on the table.
+   */
   const isFrozen =
-    offerCount >= MAX_OFFERS || isLocked || TERMINAL_STATUSES.includes(negotiationStatus)
+    offerCount >= MAX_OFFERS ||
+    isLocked ||
+    negotiationStatus === 'locked' ||
+    negotiationStatus === 'deal_locked' ||
+    negotiationStatus === 'deal_accepted'
 
   /**
-   * Scenario A: The backend has accepted / locked with a price, but the
-   * user hasn't clicked "Accept Deal" yet.
+   * Scenario 1 — Mutual Agreement ("deal_accepted"):
+   * Both sides agreed on a price; user hasn't sent it to cart yet.
+   * Shows the indigo banner + Accept Deal button.
    */
-  const isOfferPendingAcceptance =
+  const isMutualAgreement =
     !isSentToCart &&
     finalPrice !== null &&
-    (negotiationStatus === 'deal_accepted' ||
-      negotiationStatus === 'deal_locked' ||
-      negotiationStatus === 'locked')
+    negotiationStatus === 'deal_accepted'
 
   /**
-   * Scenario B: Terminal state with NO agreed price — total failure.
-   * Max offers exhausted or backend locked without a price.
+   * Scenario 3 — Bot's Last Stand ("locked" / "deal_locked" WITH a price):
+   * Backend locked with a final counter-offer; user hasn't sent it to cart yet.
+   * Shows the amber warning banner + Accept Deal button.
+   */
+  const isBotLastOffer =
+    !isSentToCart &&
+    finalPrice !== null &&
+    (negotiationStatus === 'locked' || negotiationStatus === 'deal_locked')
+
+  /**
+   * Scenario 2 — Total Failure ("locked" / "take_it_or_leave_it" WITHOUT a price):
+   * Negotiation ended with no valid agreed price.
+   * Shows the red failure banner; input fully disabled.
    */
   const isNegotiationFailed =
     !isSentToCart &&
-    !isOfferPendingAcceptance &&
-    (negotiationStatus === 'locked' || negotiationStatus === 'take_it_or_leave_it') &&
-    finalPrice === null &&
-    (offerCount >= MAX_OFFERS || isLocked)
+    (finalPrice === null || finalPrice === 0) &&
+    (negotiationStatus === 'locked' || negotiationStatus === 'take_it_or_leave_it')
 
   /**
    * Scenario C: The user explicitly clicked "Accept Deal" — cart is synced.
@@ -267,28 +278,37 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
             localStorage.getItem(`ina_cart_synced_${data.session_id}`) === 'true'
 
           if (agreedPrice === null || agreedPrice === 0) {
-            // ❌ Scenario 1: Total Failure / Too Low Offer
-            // The orchestration completed without a valid agreed price.
-            // Force the UI into the failed/locked state — no accept button, no banner.
+            // ❌ Scenario 2 Resumption: Total Failure / Low-Ball Rejection
+            // No valid price — force the failure/locked state.
             setFinalPrice(null)
             setIsSentToCart(false)
             setNegotiationStatus('locked')
           } else if (isAlreadySynced) {
-            // ✅ Scenario 2: Deal struck AND user explicitly clicked "Accept Deal" before reload.
+            // 🛒 Scenario C Resumption: User already accepted and added to cart.
             // Keep the UI locked in the green Scenario C state.
             // postMessage is NOT re-fired — the storefront already handled it.
             setFinalPrice(agreedPrice)
             setIsSentToCart(true)
             setNegotiationStatus('deal_accepted')
+          } else if (
+            data.negotiation_status === 'locked' ||
+            data.negotiation_status === 'deal_locked'
+          ) {
+            // ⚠️ Scenario 3 Resumption: Bot's Last Stand
+            // Backend sent a locked final counter-offer; user reloaded without accepting.
+            // Restore the amber-banner state so user can still click Accept Deal.
+            setFinalPrice(agreedPrice)
+            setIsSentToCart(false)
+            setNegotiationStatus('locked')
           } else {
-            // 🤝 Scenario 3: Counter-offer is in history but user reloaded WITHOUT clicking Accept.
-            // Restore Scenario A (blue banner) so the user can still accept the pending deal.
+            // 🤝 Scenario 1 Resumption: Mutual Agreement pending user click.
+            // Restore the indigo-banner state so user can still click Accept Deal.
             setFinalPrice(agreedPrice)
             setIsSentToCart(false)
             setNegotiationStatus('deal_accepted')
           }
 
-          // Restore full conversation from backend history (all three scenarios).
+          // Restore full conversation from backend history (all resumption paths).
           if (Array.isArray(data.message_history) && data.message_history.length > 0) {
             const restored: Message[] = data.message_history
               .filter((m: { text?: string }) => !!m.text)
@@ -563,7 +583,7 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
                 {msg.dealPrice !== undefined &&
                   index === messages.length - 1 &&
                   msg.role === 'assistant' &&
-                  isOfferPendingAcceptance && (
+                  (isMutualAgreement || isBotLastOffer) && (
                     <div className="mt-3 flex flex-col gap-2">
                       <button
                         id={`bargain-accept-deal-${msg.id}`}
@@ -616,14 +636,15 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
         </div>
 
         {/* ══════════════════════════════════════════════════════════════════
-         *  FOOTER BANNER — Tri-state conditional rendering
-         *  Scenario A → Blue/purple notice (offer pending user action)
-         *  Scenario B → Dark amber/red alert (negotiation failed)
-         *  Scenario C → Green secure badge (cart synced)
+         *  FOOTER BANNER — Four-state conditional rendering
+         *  Scenario 1  → Indigo notice  (mutual agreement, pending accept)
+         *  Scenario 3  → Amber warning  (bot's last offer, pending accept)
+         *  Scenario 2  → Red alert      (negotiation failed, no price)
+         *  Scenario C  → Green badge    (cart synced by user click)
          * ══════════════════════════════════════════════════════════════════ */}
 
-        {/* ── Scenario A: Offer accepted, awaiting user click ─────────── */}
-        {isOfferPendingAcceptance && (
+        {/* ── Scenario 1: Mutual agreement — awaiting user click ──────── */}
+        {isMutualAgreement && (
           <div className="px-4 py-2.5 bg-indigo-50 dark:bg-indigo-900/20 border-t border-indigo-200 dark:border-indigo-700/40 shrink-0">
             <p className="text-center text-xs font-semibold text-indigo-700 dark:text-indigo-400">
               🤝 Offer accepted! Click 'Accept Deal' to save to cart.
@@ -631,7 +652,16 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
           </div>
         )}
 
-        {/* ── Scenario B: Negotiation failed — max offers, no agreement ── */}
+        {/* ── Scenario 3: Bot's last stand — awaiting user click ──────── */}
+        {isBotLastOffer && (
+          <div className="px-4 py-2.5 bg-amber-50 dark:bg-amber-900/20 border-t border-amber-300 dark:border-amber-700/40 shrink-0">
+            <p className="text-center text-xs font-semibold text-amber-700 dark:text-amber-400">
+              ⚠️ Assistant's final counter-offer. Click 'Accept Deal' to lock it in.
+            </p>
+          </div>
+        )}
+
+        {/* ── Scenario 2: Negotiation failed — no price agreed ────────── */}
         {isNegotiationFailed && (
           <div className="px-4 py-2.5 bg-red-50 dark:bg-red-900/20 border-t border-red-300 dark:border-red-700/40 shrink-0">
             <p className="text-center text-xs font-semibold text-red-700 dark:text-red-400">
@@ -671,8 +701,8 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
               </span>
             </div>
 
-            /* ── Scenario A: Disabled input, pending user acceptance ──── */
-          ) : isOfferPendingAcceptance ? (
+            /* ── Scenario 1: Mutual agreement — pending user acceptance ── */
+          ) : isMutualAgreement ? (
             <div className="flex items-center gap-2 rounded-xl px-3 py-2 bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-700/40">
               <input
                 disabled
@@ -687,7 +717,23 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
               </span>
             </div>
 
-            /* ── Scenario B: Fully disabled — negotiation failed ──────── */
+            /* ── Scenario 3: Bot's last offer — pending user acceptance ── */
+          ) : isBotLastOffer ? (
+            <div className="flex items-center gap-2 rounded-xl px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700/40">
+              <input
+                disabled
+                type="text"
+                placeholder="Review the final price option above..."
+                className="flex-1 bg-transparent text-sm text-amber-700 dark:text-amber-400 placeholder-amber-500 dark:placeholder-amber-500 font-medium outline-none cursor-not-allowed"
+              />
+              <span className="shrink-0 w-8 h-8 rounded-lg bg-amber-500/20 flex items-center justify-center">
+                <svg className="w-4 h-4 text-amber-600 dark:text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                </svg>
+              </span>
+            </div>
+
+            /* ── Scenario 2: Total failure — negotiation ended, no deal ── */
           ) : isNegotiationFailed ? (
             <div className="flex items-center gap-2 rounded-xl px-3 py-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700/40 opacity-60">
               <input
