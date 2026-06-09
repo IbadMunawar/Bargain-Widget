@@ -262,17 +262,33 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
       // ── Session resumption ──────────────────────────────────────────────
       if (data.resumed) {
         if (data.status === 'AGREED') {
-          // Deal was previously accepted — restore the terminal state.
-          // Jump straight to Scenario C (green "Deal locked" badge) so no
-          // stale "Accept Deal" button or misleading banner ever renders.
-          // The postMessage cart event is NOT re-fired — only the explicit
-          // user click in handleVerifiedAddToCart() may dispatch it.
-          const agreedPrice = data.agreed_price ?? data.final_price ?? data.list_price
-          setFinalPrice(agreedPrice)
-          setIsSentToCart(true)
-          setNegotiationStatus('deal_accepted')
+          const agreedPrice = data.agreed_price ?? data.final_price ?? null
+          const isAlreadySynced =
+            localStorage.getItem(`ina_cart_synced_${data.session_id}`) === 'true'
 
-          // Restore full conversation from backend history.
+          if (agreedPrice === null || agreedPrice === 0) {
+            // ❌ Scenario 1: Total Failure / Too Low Offer
+            // The orchestration completed without a valid agreed price.
+            // Force the UI into the failed/locked state — no accept button, no banner.
+            setFinalPrice(null)
+            setIsSentToCart(false)
+            setNegotiationStatus('locked')
+          } else if (isAlreadySynced) {
+            // ✅ Scenario 2: Deal struck AND user explicitly clicked "Accept Deal" before reload.
+            // Keep the UI locked in the green Scenario C state.
+            // postMessage is NOT re-fired — the storefront already handled it.
+            setFinalPrice(agreedPrice)
+            setIsSentToCart(true)
+            setNegotiationStatus('deal_accepted')
+          } else {
+            // 🤝 Scenario 3: Counter-offer is in history but user reloaded WITHOUT clicking Accept.
+            // Restore Scenario A (blue banner) so the user can still accept the pending deal.
+            setFinalPrice(agreedPrice)
+            setIsSentToCart(false)
+            setNegotiationStatus('deal_accepted')
+          }
+
+          // Restore full conversation from backend history (all three scenarios).
           if (Array.isArray(data.message_history) && data.message_history.length > 0) {
             const restored: Message[] = data.message_history
               .filter((m: { text?: string }) => !!m.text)
@@ -417,6 +433,9 @@ export function ChatWidget({ tenantId, productId }: ChatWidgetProps) {
     setDealDispatched(true)
     // ── Scenario C trigger: flip the cart-sync boolean ──
     setIsSentToCart(true)
+    // Persist a marker so future reloads know the user explicitly accepted this deal.
+    // This is the ONLY place this key is written — it must remain bound to user intent.
+    localStorage.setItem(`ina_cart_synced_${session.session_id}`, 'true')
     // Brief delay so the user sees the success state before the widget closes.
     setTimeout(() => setIsOpen(false), 1200)
   }
